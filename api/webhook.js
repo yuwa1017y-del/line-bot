@@ -65,6 +65,8 @@ export default async function handler(req, res) {
 
   res.status(200).json({ status: 'ok' });
 
+  console.log('EVENTS:', JSON.stringify(req.body.events));
+
   const events = req.body.events || [];
   for (const event of events) {
 
@@ -94,7 +96,6 @@ export default async function handler(req, res) {
       if (!userDoc.exists) continue;
       const userData = userDoc.data();
 
-      // 返信有無を記録
       await updateSheet(userId, 'G', '✅');
 
       if (userData.step === 'ask_name') {
