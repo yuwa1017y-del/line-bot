@@ -3,16 +3,9 @@ import { getFirestore } from 'firebase-admin/firestore';
 import crypto from 'crypto';
 
 if (!getApps().length) {
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY
-    ? process.env.FIREBASE_PRIVATE_KEY.split('\\n').join('\n')
-    : undefined;
-
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: privateKey,
-    }),
+    credential: cert(serviceAccount),
   });
 }
 
