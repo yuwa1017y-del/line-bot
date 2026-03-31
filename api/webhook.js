@@ -10,6 +10,7 @@ if (!getApps().length) {
 
 const db = getFirestore();
 const SPREADSHEET_ID = '18t43VJbEK9KK6SZSosefBgPp_JNPY9WgzJ1A0a2FFFk';
+const SHEET_NAME = '流入表';
 
 async function getSheets() {
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -21,30 +22,38 @@ async function getSheets() {
 }
 
 async function appendToSheet(values) {
-  const sheets = await getSheets();
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: 'Sheet1!A:K',
-    valueInputOption: 'USER_ENTERED',
-    resource: { values: [values] },
-  });
+  try {
+    const sheets = await getSheets();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:K`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [values] },
+    });
+  } catch (e) {
+    console.error('appendToSheet error:', e.message);
+  }
 }
 
 async function updateSheet(lineUserId, column, value) {
-  const sheets = await getSheets();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: 'Sheet1!A:A',
-  });
-  const rows = res.data.values || [];
-  const rowIndex = rows.findIndex(row => row[0] === lineUserId);
-  if (rowIndex === -1) return;
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `Sheet1!${column}${rowIndex + 1}`,
-    valueInputOption: 'USER_ENTERED',
-    resource: { values: [[value]] },
-  });
+  try {
+    const sheets = await getSheets();
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!A:A`,
+    });
+    const rows = res.data.values || [];
+    const rowIndex = rows.findIndex(row => row[0] === lineUserId);
+    if (rowIndex === -1) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${SHEET_NAME}!${column}${rowIndex + 1}`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [[value]] },
+    });
+  } catch (e) {
+    console.error('updateSheet error:', e.message);
+  }
 }
 
 export default async function handler(req, res) {
@@ -70,10 +79,14 @@ export default async function handler(req, res) {
   const events = req.body.events || [];
   for (const event of events) {
 
-    // 友達追加
     if (event.type === 'follow') {
       const userId = event.source.userId;
       const today = new Date().toLocaleDateString('ja-JP');
+      // LINE返信を先に実行
+      await replyText(event.replyToken,
+        `ご追加ありがとうございます✨\nまずお名前（フルネーム）を教えてください😊`
+      );
+      // その後Firestore・スプシ
       await db.collection('users').doc(userId).set({
         userId,
         step: 'ask_name',
@@ -82,12 +95,8 @@ export default async function handler(req, res) {
       await appendToSheet([
         userId, '', '', '', '', today, '', '', '', '', ''
       ]);
-      await replyText(event.replyToken,
-        `ご追加ありがとうございます✨\nまずお名前（フルネーム）を教えてください😊`
-      );
     }
 
-    // テキスト受信
     if (event.type === 'message' && event.message.type === 'text') {
       const userId = event.source.userId;
       const text = event.message.text.trim();
@@ -96,23 +105,19 @@ export default async function handler(req, res) {
       if (!userDoc.exists) continue;
       const userData = userDoc.data();
 
-      await updateSheet(userId, 'G', '✅');
-
       if (userData.step === 'ask_name') {
         const normalized = text.replace(/\s+/g, '');
+        await replyText(event.replyToken, `ありがとうございます！\n次にミクチャIDを教えてください😊`);
         await userRef.update({ step: 'ask_mixi_id', name: normalized });
         await updateSheet(userId, 'C', normalized);
-        await replyText(event.replyToken, `ありがとうございます！\n次にミクチャIDを教えてください😊`);
+        await updateSheet(userId, 'G', '✅');
 
       } else if (userData.step === 'ask_mixi_id') {
-        await userRef.update({ step: 'ask_contest', mixiId: text });
-        await updateSheet(userId, 'A', text);
         await replyText(event.replyToken, `ありがとうございます！\n参加するコンテスト名を教えてください😊`);
+        await userRef.update({ step: 'ask_contest', mixiId: text });
+        await updateSheet(userId, 'B', text);
 
       } else if (userData.step === 'ask_contest') {
-        await userRef.update({ step: 'ask_route', contestName: text });
-        await updateSheet(userId, 'D', text);
-        await updateSheet(userId, 'E', '流入');
         await replyQuickReply(event.replyToken,
           `ご入力ありがとうございます！\n正式にKIRINZ公認ライバーとしての権利が付与されています！\n\n15〜20分ほどお話しできればと思います📞\nご希望の方法を選んでください👇`,
           [
@@ -120,35 +125,37 @@ export default async function handler(req, res) {
             { label: '💬 テキストで進める', text: 'メッセージ希望' },
           ]
         );
+        await userRef.update({ step: 'ask_route', contestName: text });
+        await updateSheet(userId, 'D', text);
+        await updateSheet(userId, 'E', '流入');
 
       } else if (userData.step === 'ask_route') {
         if (text === '電話予約をします') {
-          await userRef.update({ step: 'wait_reservation' });
-          await updateSheet(userId, 'E', '電話待ち');
           await replyQuickReply(event.replyToken,
             `下記URLよりご希望の日時をお選びください📅\n👇 電話予約（15分）はこちら 👇\nhttps://calendar.app.google/n8hMyTNboADqz7qeA\n\n予約が完了したら下のボタンを押してください👇`,
             [{ label: '✅ 予約完了しました', text: '予約完了しました' }]
           );
+          await userRef.update({ step: 'wait_reservation' });
+          await updateSheet(userId, 'E', '電話待ち');
 
         } else if (text === 'メッセージ希望') {
-          await userRef.update({ step: 'text_route' });
-          await updateSheet(userId, 'J', '✅');
-          await updateSheet(userId, 'E', 'メッセ対応中');
           await replyQuickReply(event.replyToken,
             `かしこまりました！\nまずは下記Notionをご確認ください！\nhttps://www.notion.so/KIRINZ-1c1c2236f4f880a39313fadac6184719\n\n✅ 頑張りに応じた報酬＋事務所特典あり🎁\n✅ 登録料・違約金一切なし\n✅ システム登録が報酬受け取りに必須\n\n内容をご確認いただけましたら👇`,
             [{ label: '✅ 内容を確認・同意しました', text: '内容を確認・同意しました' }]
           );
+          await userRef.update({ step: 'text_route' });
+          await updateSheet(userId, 'J', '✅');
+          await updateSheet(userId, 'E', 'メッセ対応中');
         }
 
       } else if (userData.step === 'wait_reservation' && text === '予約完了しました') {
-        await userRef.update({ step: 'wait_form' });
-        await updateSheet(userId, 'E', '面談待ち');
         await replyText(event.replyToken,
           `予約確認できました✨ 当日はよろしくお願いします！\n\nお電話をスムーズに進めるために事前に資料を共有します😊\n📝 重要事項：https://www.notion.so/KIRINZ-1c1c2236f4f880a39313fadac6184719\n📝 登録フォーム：https://kirinz-form.studio.site/kirinz/mc\n\n登録まで完了したら下のボタンを押してください👇`
         );
+        await userRef.update({ step: 'wait_form' });
+        await updateSheet(userId, 'E', '面談待ち');
 
       } else if (userData.step === 'text_route' && text === '内容を確認・同意しました') {
-        await userRef.update({ step: 'ask_plan' });
         await replyQuickReply(event.replyToken,
           `ありがとうございます！\n報酬プランを選んでください😊\n\n1️⃣【成果型】ギフティングに応じた報酬。自分のペースで配信したい方に！\n2️⃣【ランク型】毎日長時間配信できる上級者向けプラン`,
           [
@@ -156,22 +163,23 @@ export default async function handler(req, res) {
             { label: '👑 ランク型で進める', text: 'ランク型希望' },
           ]
         );
+        await userRef.update({ step: 'ask_plan' });
 
       } else if (userData.step === 'ask_plan' && (text === '成果型希望' || text === 'ランク型希望')) {
-        await userRef.update({ step: 'wait_form', plan: text });
         await replyQuickReply(event.replyToken,
           `ありがとうございます！\n下記フォームより登録をお願いします📝（5分ほどで完了します✨）\n👇 システム登録フォーム 👇\nhttps://kirinz-form.studio.site/kirinz/mc\n\n⚠️ 口座情報・ID・所属規約の確認をお忘れなく！\n\n入力が完了したら👇`,
           [{ label: '📝 フォーム入力完了！', text: 'フォーム入力完了しました' }]
         );
+        await userRef.update({ step: 'wait_form', plan: text });
 
       } else if (text === 'フォーム入力完了しました') {
         const today = new Date().toLocaleDateString('ja-JP');
-        await userRef.update({ step: 'completed' });
-        await updateSheet(userId, 'E', '契約完了');
-        await updateSheet(userId, 'K', today);
         await replyText(event.replyToken,
           `フォーム回答ありがとうございます！\nこれをもって正式にKIRINZ公認ライバーとしての活動スタートです！🚀\n\n🚨【超重要】今後のサポートや報酬は専属の「マネジメントLINE」で行います。\n👇 マネジメントLINE＠はこちら👇\nhttps://lin.ee/UDmmitb\n\n追加後すぐに届く「初期連携フォーム」にご登録ください🎁`
         );
+        await userRef.update({ step: 'completed' });
+        await updateSheet(userId, 'E', '契約完了');
+        await updateSheet(userId, 'K', today);
       }
     }
   }
